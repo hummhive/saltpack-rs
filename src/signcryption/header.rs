@@ -1,7 +1,8 @@
+use dryoc::classic::crypto_secretbox::{crypto_secretbox_easy, crypto_secretbox_open_easy};
+use dryoc::constants::CRYPTO_SECRETBOX_MACBYTES;
 use hmac_sha512::HMAC;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha512};
-use sodiumoxide::crypto::secretbox;
 use std::error::Error;
 use std::fmt;
 
@@ -17,7 +18,7 @@ pub enum MessageType {
 
 #[derive(Debug, Clone)]
 pub struct SigncryptedMessageHeader {
-    public_key: Vec<u8>,
+    public_key: [u8; 32],
     sender_secretbox: Vec<u8>,
     pub recipients: Vec<SigncryptedMessageRecipient>,
 }
@@ -27,7 +28,7 @@ pub struct HeaderData(
     String,
     (u8, u8),
     MessageType,
-    Vec<u8>,
+    [u8; 32],
     Vec<u8>,
     Vec<(Vec<u8>, Vec<u8>)>,
 );
@@ -36,7 +37,7 @@ impl SigncryptedMessageHeader {
     const SENDER_KEY_SECRETBOX_NONCE: &'static [u8; 24] = b"saltpack_sender_key_sbox";
 
     pub fn new(
-        public_key: Vec<u8>,
+        public_key: [u8; 32],
         sender_secretbox: Vec<u8>,
         recipients: Vec<SigncryptedMessageRecipient>,
     ) -> Result<Self, SigncryptedMessageHeaderError> {
@@ -63,16 +64,22 @@ impl SigncryptedMessageHeader {
     }
 
     pub fn create(
-        public_key: Vec<u8>,
-        payload_key: Vec<u8>,
+        public_key: [u8; 32],
+        payload_key: [u8; 32],
         sender_public_key: Option<Vec<u8>>,
         recipients: Vec<SigncryptedMessageRecipient>,
     ) -> Result<Self, SigncryptedMessageHeaderError> {
-        if let Some(ref spk) = sender_public_key {
-            if spk.len() != 32 {
-                return Err(SigncryptedMessageHeaderError::InvalidSenderPublicKey);
-            }
-        }
+        log::info!("create");
+        log::info!("create");
+        log::info!("create");
+        log::info!("create");
+        log::info!("create");
+        log::info!("sender_public_key: {:?}", sender_public_key);
+        // if let Some(ref spk) = sender_public_key {
+        //     if spk.len() != 32 {
+        //         return Err(SigncryptedMessageHeaderError::InvalidSenderPublicKey);
+        //     }
+        // }
         if payload_key.len() != 32 {
             return Err(SigncryptedMessageHeaderError::InvalidPayloadKey);
         }
@@ -82,11 +89,14 @@ impl SigncryptedMessageHeader {
 
         // Encrypt the sender's long-term public key signing key using crypto_secretbox with the payload key and
         // the nonce saltpack_sender_key_sbox, to create the sender secretbox.
-        let sender_secretbox = secretbox::seal(
+        let mut sender_secretbox = vec![0u8; sender_public_key.len() + CRYPTO_SECRETBOX_MACBYTES];
+        crypto_secretbox_easy(
+            &mut sender_secretbox,
             &sender_public_key,
-            &secretbox::Nonce::from_slice(Self::SENDER_KEY_SECRETBOX_NONCE).unwrap(),
-            &secretbox::Key::from_slice(&payload_key).unwrap(),
-        );
+            &Self::SENDER_KEY_SECRETBOX_NONCE,
+            &payload_key,
+        )
+        .expect("Failed to encrypt sender secretbox");
 
         Self::new(public_key, sender_secretbox, recipients)
     }
@@ -182,8 +192,8 @@ impl SigncryptedMessageHeader {
 
     pub fn decrypt_payload_key_with_curve25519_keypair(
         &self,
-        private_key: &[u8],
-    ) -> Result<Option<(Vec<u8>, SigncryptedMessageRecipient)>, Box<dyn Error>> {
+        private_key: &[u8; 32],
+    ) -> Result<Option<([u8; 32], SigncryptedMessageRecipient)>, Box<dyn Error>> {
         log::info!("decrypt_payload_key_with_curve25519_keypair");
         for recipient in &self.recipients {
             let (shared_symmetric_key, recipient_identifier) =
@@ -210,14 +220,17 @@ impl SigncryptedMessageHeader {
         &self,
         shared_symmetric_key: &[u8],
         recipient_identifier: Option<&[u8]>,
-    ) -> Option<(Vec<u8>, SigncryptedMessageRecipient)> {
+    ) -> Option<([u8; 32], SigncryptedMessageRecipient)> {
         log::info!("self.public_key: {:?}", self.public_key);
         log::info!("shared_symmetric_key: {:?}", shared_symmetric_key);
-        let mut data = self.public_key.clone();
+        let mut data = self.public_key.clone().to_vec();
         data.extend_from_slice(shared_symmetric_key);
         log::info!("data: {:?}", data);
 
-        let derived_key = &HMAC::mac(&data, SigncryptedMessageRecipient::HMAC_KEY_SYMMETRIC)[..32];
+        let derived_key: [u8; 32] =
+            HMAC::mac(&data, SigncryptedMessageRecipient::HMAC_KEY_SYMMETRIC)[..32]
+                .try_into()
+                .unwrap();
         log::info!("derived_key: {:?}", derived_key);
 
         log::info!("identifiers dasfdfasfdasfdsdont match");
@@ -243,24 +256,36 @@ impl SigncryptedMessageHeader {
         None
     }
 
-    pub fn decrypt_sender(&self, payload_key: &[u8]) -> Result<Option<Vec<u8>>, Box<dyn Error>> {
-        let sender_public_key = secretbox::open(
+    pub fn decrypt_sender(
+        &self,
+        payload_key: &[u8; 32],
+    ) -> Result<Option<[u8; 32]>, Box<dyn Error>> {
+        log::warn!("decrypt_sender");
+        let mut sender_public_key =
+            vec![0u8; self.sender_secretbox.len() - CRYPTO_SECRETBOX_MACBYTES];
+        log::info!("sender_public_key: {:?}", sender_public_key);
+        let res = crypto_secretbox_open_easy(
+            &mut sender_public_key,
             &self.sender_secretbox,
-            &secretbox::Nonce::from_slice(Self::SENDER_KEY_SECRETBOX_NONCE).unwrap(),
-            &secretbox::Key::from_slice(payload_key).unwrap(),
+            &Self::SENDER_KEY_SECRETBOX_NONCE,
+            payload_key,
         );
-
-        if sender_public_key.is_err() {
+        log::info!("res: {:?}", res);
+        if res.is_err() {
             return Err(Box::new(
                 SigncryptedMessageHeaderError::InvalidSenderPublicKey,
             ));
         }
 
-        if sender_public_key.clone().unwrap() == vec![0; 32] {
+        if sender_public_key.clone() == vec![0; 32] {
             return Ok(None);
         }
 
-        Ok(Some(sender_public_key.unwrap()))
+        Ok(Some(
+            sender_public_key
+                .try_into()
+                .expect("sender public key is not 32 bytes"),
+        ))
     }
 }
 
@@ -283,26 +308,29 @@ impl Error for SigncryptedMessageHeaderError {}
 
 #[cfg(test)]
 mod tests {
+    use dryoc::{
+        classic::{crypto_box::crypto_box_keypair, crypto_sign::crypto_sign_keypair},
+        rng::randombytes_buf,
+    };
+
     use crate::signcryption::recipient::SymmetricKeyRecipient;
 
     use super::*;
-    use sodiumoxide::crypto::box_;
-    use sodiumoxide::crypto::sign;
 
     #[test]
     fn test_create_and_decode_header() {
         // Generate recipient's encryption keypair
-        let (recipient_public_key, _recipient_secret_key) = box_::gen_keypair();
+        let (recipient_public_key, _recipient_secret_key) = crypto_box_keypair();
 
         // Generate sender's signing keypair
-        let (sender_public_key, _sender_secret_key) = sign::gen_keypair();
+        let (sender_public_key, _sender_secret_key) = crypto_sign_keypair();
 
         // Generate a random payload key
-        let payload_key = sodiumoxide::randombytes::randombytes(32);
+        let payload_key: [u8; 32] = randombytes_buf(32).try_into().unwrap();
 
         // Create a header
         let header = SigncryptedMessageHeader::create(
-            recipient_public_key.as_ref().to_vec(),
+            recipient_public_key,
             payload_key.clone(),
             Some(sender_public_key.as_ref().to_vec()),
             vec![],
@@ -317,30 +345,26 @@ mod tests {
             .expect("Failed to decode header");
 
         // Check if the decoded header matches the original header
-        assert_eq!(
-            decoded_header.public_key,
-            recipient_public_key.as_ref().to_vec()
-        );
+        assert_eq!(decoded_header.public_key, recipient_public_key);
         assert_eq!(decoded_header.sender_secretbox, header.sender_secretbox);
         // assert_eq!(decoded_header.recipients, header.recipients);
     }
 
     #[test]
     fn test_decrypt_payload_key_with_curve25519_keypair() {
-        env_logger::init();
         // Generate recipient's encryption keypair
-        let (recipient_public_key, recipient_secret_key) = box_::gen_keypair();
+        let (recipient_public_key, recipient_secret_key) = crypto_box_keypair();
 
         // Generate sender's signing keypair
-        let (sender_public_key, _sender_secret_key) = sign::gen_keypair();
+        let (sender_public_key, _sender_secret_key) = crypto_sign_keypair();
 
         // Generate a random payload key
-        let payload_key = sodiumoxide::randombytes::randombytes(32);
+        let payload_key: [u8; 32] = randombytes_buf(32).try_into().unwrap();
 
-        let ephemeral_keypair = box_::gen_keypair();
+        let ephemeral_keypair = crypto_box_keypair();
         let recipient = SigncryptedMessageRecipient::create(
-            recipient_public_key.0.as_ref(),
-            ephemeral_keypair.1.as_ref(),
+            &recipient_public_key,
+            &ephemeral_keypair.1,
             &payload_key,
             0,
         )
@@ -348,7 +372,7 @@ mod tests {
 
         // Create a header with the recipient's public key
         let header = SigncryptedMessageHeader::create(
-            ephemeral_keypair.0.as_ref().to_vec(),
+            ephemeral_keypair.0,
             payload_key.clone(),
             Some(sender_public_key.as_ref().to_vec()),
             vec![recipient],
@@ -357,7 +381,7 @@ mod tests {
 
         // Decrypt the payload key using the recipient's secret key
         let decrypted_payload_key = header
-            .decrypt_payload_key_with_curve25519_keypair(recipient_secret_key.as_ref())
+            .decrypt_payload_key_with_curve25519_keypair(&recipient_secret_key)
             .expect("Failed to decrypt payload key")
             .expect("Payload key not found");
 
@@ -367,19 +391,16 @@ mod tests {
 
     #[test]
     fn test_decrypt_payload_key_with_symmetric_key() {
-        // Generate recipient's encryption keypair
-        let (recipient_public_key, _recipient_secret_key) = box_::gen_keypair();
-
         // Generate sender's signing keypair
-        let (sender_public_key, _sender_secret_key) = sign::gen_keypair();
-
-        let ephemeral_keypair = box_::gen_keypair();
+        let (sender_public_key, _sender_secret_key) = crypto_sign_keypair();
 
         // Generate a random payload key
-        let payload_key = sodiumoxide::randombytes::randombytes(32);
+        let payload_key: [u8; 32] = randombytes_buf(32).try_into().unwrap();
+
+        let ephemeral_keypair = crypto_box_keypair();
 
         // Generate a random shared symmetric key
-        let shared_symmetric_key = sodiumoxide::randombytes::randombytes(32);
+        let shared_symmetric_key: [u8; 32] = randombytes_buf(32).try_into().unwrap();
 
         let symmetric_key_recipient = SymmetricKeyRecipient {
             identifier: [1u8; 32].to_vec(),
@@ -404,7 +425,7 @@ mod tests {
 
         // Create a header with the recipient
         let header = SigncryptedMessageHeader::create(
-            ephemeral_keypair.0.as_ref().to_vec(),
+            ephemeral_keypair.0,
             payload_key.clone(),
             Some(sender_public_key.as_ref().to_vec()),
             vec![recipient.clone()],
@@ -426,17 +447,16 @@ mod tests {
     #[test]
     fn test_decrypt_sender() {
         // Generate recipient's encryption keypair
-        let (recipient_public_key, _recipient_secret_key) = box_::gen_keypair();
+        let (recipient_public_key, _recipient_secret_key) = crypto_box_keypair();
 
         // Generate sender's signing keypair
-        let (sender_public_key, _sender_secret_key) = sign::gen_keypair();
+        let (sender_public_key, _sender_secret_key) = crypto_sign_keypair();
 
         // Generate a random payload key
-        let payload_key = sodiumoxide::randombytes::randombytes(32);
-
+        let payload_key: [u8; 32] = randombytes_buf(32).try_into().unwrap();
         // Create a header with the sender's public key
         let header = SigncryptedMessageHeader::create(
-            recipient_public_key.as_ref().to_vec(),
+            recipient_public_key,
             payload_key.clone(),
             Some(sender_public_key.as_ref().to_vec()),
             vec![],
@@ -450,9 +470,6 @@ mod tests {
             .expect("Sender public key not found");
 
         // Check if the decrypted sender's public key matches the original sender's public key
-        assert_eq!(
-            decrypted_sender_public_key,
-            sender_public_key.as_ref().to_vec()
-        );
+        assert_eq!(decrypted_sender_public_key, sender_public_key);
     }
 }

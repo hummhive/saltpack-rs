@@ -1,8 +1,14 @@
 use crate::signcryption::header::SigncryptedMessageHeader;
+use dryoc::{
+    classic::{
+        crypto_secretbox::{crypto_secretbox_easy, crypto_secretbox_open_easy},
+        crypto_sign::{crypto_sign_detached, crypto_sign_verify_detached},
+    },
+    constants::{CRYPTO_SECRETBOX_MACBYTES, CRYPTO_SIGN_BYTES},
+};
 use rmp_serde::{Deserializer, Serializer};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha512};
-use sodiumoxide::crypto::{secretbox, sign};
 use std::error::Error;
 
 #[derive(Debug, Clone)]
@@ -29,8 +35,8 @@ impl SigncryptedMessagePayload {
 
     pub fn create(
         header: &SigncryptedMessageHeader,
-        payload_key: &[u8],
-        private_key: Option<&[u8]>,
+        payload_key: &[u8; 32],
+        private_key: Option<&[u8; 64]>,
         data: &[u8],
         index: u64,
         final_flag: bool,
@@ -41,16 +47,16 @@ impl SigncryptedMessagePayload {
         let signature = if let Some(pk) = private_key {
             let signature_data =
                 Self::generate_signature_data(&header_hash, &nonce, final_flag, data);
-            sign::sign_detached(&signature_data, &sign::SecretKey::from_slice(pk).unwrap())
+            let mut signature = [0u8; CRYPTO_SIGN_BYTES];
+            crypto_sign_detached(&mut signature, &signature_data, &pk);
+            signature
         } else {
-            sign::Signature::from_bytes(&[0u8; 64]).unwrap()
+            [0u8; 64]
         };
 
-        let payload_secretbox = secretbox::seal(
-            &[signature.as_ref(), data].concat(),
-            &secretbox::Nonce::from_slice(&nonce).unwrap(),
-            &secretbox::Key::from_slice(payload_key).unwrap(),
-        );
+        let message = &[signature.as_ref(), data].concat();
+        let mut payload_secretbox = vec![0u8; message.len() + CRYPTO_SECRETBOX_MACBYTES];
+        crypto_secretbox_easy(&mut payload_secretbox, message, &nonce, payload_key);
 
         Ok(Self::new(payload_secretbox, final_flag))
     }
@@ -115,31 +121,26 @@ impl SigncryptedMessagePayload {
     pub fn decrypt(
         &self,
         header: &SigncryptedMessageHeader,
-        public_key: Option<&[u8]>,
-        payload_key: &[u8],
+        public_key: Option<&[u8; 32]>,
+        payload_key: &[u8; 32],
         index: u64,
     ) -> Result<Vec<u8>, Box<dyn Error>> {
         let (header_hash, _) = header.encode()?;
         let nonce = Self::generate_nonce(&header_hash, index, self.final_flag);
 
         log::info!("self.payload_secretbox: {:?}", self.payload_secretbox);
-        let decrypted = secretbox::open(
-            &self.payload_secretbox,
-            &secretbox::Nonce::from_slice(&nonce).unwrap(),
-            &secretbox::Key::from_slice(payload_key).unwrap(),
-        )
-        .map_err(|e| format!("Failed to decrypt data: {:?}", e))?;
+        let mut decrypted = vec![0u8; &self.payload_secretbox.len() - CRYPTO_SECRETBOX_MACBYTES];
+        crypto_secretbox_open_easy(&mut decrypted, &self.payload_secretbox, &nonce, payload_key)
+            .map_err(|e| format!("Failed to decrypt data: {:?}", e))?;
 
         let (signature, data) = decrypted.split_at(64);
 
         if let Some(pk) = public_key {
             let sign_data =
-                Self::generate_signature_data(&header_hash, &nonce, self.final_flag, data);
-            let public_key = sign::PublicKey::from_slice(pk).unwrap();
-            let signature = sign::Signature::from_bytes(signature)
-                .map_err(|e| format!("Generate signature from bytes: {:?}", e))?;
+                Self::generate_signature_data(&header_hash, &nonce, self.final_flag, &data);
 
-            if !sign::verify_detached(&signature, &sign_data, &public_key) {
+            let res = crypto_sign_verify_detached(&signature.try_into().unwrap(), &sign_data, &pk);
+            if res.is_err() {
                 return Err("Invalid payload signature".into());
             }
         }
@@ -150,15 +151,16 @@ impl SigncryptedMessagePayload {
 
 #[cfg(test)]
 mod tests {
+    use dryoc::{
+        classic::{crypto_box::crypto_box_keypair, crypto_sign::crypto_sign_keypair},
+        rng::randombytes_buf,
+    };
+
     use super::*;
-    use sodiumoxide::crypto::box_;
-    use sodiumoxide::crypto::sign;
 
     #[test]
     fn test_generate_nonce_final() {
-        env_logger::init();
-
-        let header_hash = sodiumoxide::randombytes::randombytes(32);
+        let header_hash: [u8; 32] = randombytes_buf(32).try_into().unwrap();
         let index = 42;
         let final_flag = true;
 
@@ -171,7 +173,7 @@ mod tests {
 
     #[test]
     fn test_generate_nonce_non_final() {
-        let header_hash = sodiumoxide::randombytes::randombytes(32);
+        let header_hash: [u8; 32] = randombytes_buf(32).try_into().unwrap();
         let index = 42;
         let final_flag = false;
 
@@ -184,8 +186,8 @@ mod tests {
 
     #[test]
     fn test_generate_signature_data() {
-        let header_hash = sodiumoxide::randombytes::randombytes(32);
-        let nonce = sodiumoxide::randombytes::randombytes(24);
+        let header_hash: [u8; 32] = randombytes_buf(32).try_into().unwrap();
+        let nonce: [u8; 24] = randombytes_buf(24).try_into().unwrap();
         let final_flag = false;
         let data = b"Test data";
 
@@ -211,10 +213,11 @@ mod tests {
 
     #[test]
     fn test_encode_and_decode() {
-        let payload_secretbox = sodiumoxide::randombytes::randombytes(100);
+        let payload_secretbox: [u8; 100] = randombytes_buf(100).try_into().unwrap();
         let final_flag = true;
 
-        let payload = SigncryptedMessagePayload::new(payload_secretbox.clone(), final_flag);
+        let payload =
+            SigncryptedMessagePayload::new(payload_secretbox.clone().to_vec(), final_flag);
 
         let encoded = payload.encode().expect("Failed to encode payload");
         let decoded = SigncryptedMessagePayload::decode(EncodedData::Packed(&encoded), false)
@@ -226,16 +229,16 @@ mod tests {
 
     #[test]
     fn test_create_and_decrypt_payload() {
-        // Generate sender's signing keypair
-        let (sender_public_key, sender_secret_key) = sign::gen_keypair();
-
         // Generate recipient's encryption keypair
-        let (recipient_public_key, recipient_secret_key) = box_::gen_keypair();
-        let payload_key = sodiumoxide::randombytes::randombytes(32);
+        let (recipient_public_key, recipient_secret_key) = crypto_box_keypair();
+
+        // Generate sender's signing keypair
+        let (sender_public_key, sender_secret_key) = crypto_sign_keypair();
+        let payload_key: [u8; 32] = randombytes_buf(32).try_into().unwrap();
 
         // Create a header with the recipient's public key
         let header = SigncryptedMessageHeader::create(
-            recipient_public_key.as_ref().to_vec(),
+            recipient_public_key,
             payload_key.clone(),
             Some(sender_public_key.as_ref().to_vec()),
             vec![],
@@ -249,7 +252,7 @@ mod tests {
         let payload = SigncryptedMessagePayload::create(
             &header,
             &payload_key,
-            Some(sender_secret_key.as_ref()),
+            Some(&sender_secret_key),
             data,
             0,
             true,
@@ -258,7 +261,7 @@ mod tests {
 
         // Decrypt the payload
         let decrypted_data = payload
-            .decrypt(&header, Some(sender_public_key.as_ref()), &payload_key, 0)
+            .decrypt(&header, Some(&sender_public_key), &payload_key, 0)
             .expect("Failed to decrypt payload");
 
         assert_eq!(decrypted_data, data);

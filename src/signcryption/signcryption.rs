@@ -1,10 +1,9 @@
 use crate::signcryption::header::SigncryptedMessageHeader;
 use crate::signcryption::payload::SigncryptedMessagePayload;
 use crate::signcryption::recipient::{SigncryptedMessageRecipient, SymmetricKeyRecipient};
+use dryoc::classic::crypto_box::crypto_box_keypair;
+use dryoc::rng::randombytes_buf;
 use rmp_serde::Deserializer;
-use serde::Deserialize;
-use sodiumoxide::crypto::box_;
-use sodiumoxide::crypto::sign::{PublicKey, SecretKey};
 use std::error::Error;
 
 use super::payload::EncodedData;
@@ -16,17 +15,17 @@ pub struct Signcryption;
 impl Signcryption {
     pub fn signcrypt(
         data: &[u8],
-        keypair: Option<(PublicKey, SecretKey)>,
-        recipients_keys: Option<&[Vec<u8>]>,
+        keypair: Option<([u8; 32], [u8; 64])>,
+        recipients_keys: Option<&[[u8; 32]]>,
         symmetric_key_recipients: Option<&[SymmetricKeyRecipient]>,
     ) -> Result<Vec<u8>, Box<dyn Error>> {
         let chunks = Self::chunk_buffer(data, CHUNK_LENGTH);
 
         // 1. Generate a random 32-byte payload key.
-        let payload_key = sodiumoxide::randombytes::randombytes(32);
+        let payload_key: [u8; 32] = randombytes_buf(32).try_into().unwrap();
 
         // 2. Generate a random ephemeral keypair.
-        let ephemeral_keypair = box_::gen_keypair();
+        let ephemeral_keypair = crypto_box_keypair();
 
         let mut recipients = vec![];
         // recipients_keys
@@ -38,7 +37,7 @@ impl Signcryption {
             for (index, key) in keys.iter().enumerate() {
                 let recipient_instance = SigncryptedMessageRecipient::create(
                     key,
-                    ephemeral_keypair.1.as_ref(),
+                    &ephemeral_keypair.1,
                     &payload_key,
                     index as u64,
                 )?;
@@ -60,7 +59,7 @@ impl Signcryption {
         }
 
         let header = SigncryptedMessageHeader::create(
-            ephemeral_keypair.0.as_ref().to_vec(),
+            ephemeral_keypair.0,
             payload_key.clone(),
             keypair.clone().map(|kp| kp.0.as_ref().to_vec()),
             recipients,
@@ -73,7 +72,7 @@ impl Signcryption {
             let payload = SigncryptedMessagePayload::create(
                 &header,
                 &payload_key,
-                keypair.as_ref().map(|kp| kp.1.as_ref()),
+                keypair.as_ref().map(|kp| &kp.1),
                 chunk,
                 i as u64,
                 final_chunk,
@@ -101,7 +100,7 @@ impl Signcryption {
 
     pub fn designcrypt(
         signcrypted: &[u8],
-        keypair_or_symmetric_key_recipient: Either<&box_::SecretKey, &SymmetricKeyRecipient>,
+        keypair_or_symmetric_key_recipient: Either<&[u8; 32], &SymmetricKeyRecipient>,
         sender: Option<&[u8]>,
     ) -> Result<DesigncryptResult, Box<dyn Error>> {
         let mut deserializer = Deserializer::new(signcrypted);
@@ -129,7 +128,7 @@ impl Signcryption {
         log::info!("payload: {:?}", payload);
         let payload_key_and_recipient = match keypair_or_symmetric_key_recipient {
             Either::Left(secret_key) => header
-                .decrypt_payload_key_with_curve25519_keypair(secret_key.as_ref())
+                .decrypt_payload_key_with_curve25519_keypair(secret_key)
                 .map_err(|e| {
                     format!(
                         "Failed to decrypt payload key with curve25519 keypair: {}",
@@ -149,12 +148,8 @@ impl Signcryption {
             .decrypt_sender(&payload_key)
             .map_err(|e| format!("Failed to decrypt sender public key: {}", e))?;
         log::info!("sender_public_key: {:?}", sender_public_key);
-        let decrypted_payload = payload.decrypt(
-            &header,
-            sender_public_key.as_ref().map(|spk| spk.as_slice()),
-            &payload_key,
-            0,
-        )?;
+        let decrypted_payload =
+            payload.decrypt(&header, sender_public_key.as_ref(), &payload_key, 0)?;
         log::info!("decrypted_payload: {:?}", decrypted_payload);
         // while let Some(item) = Deserialize::deserialize(&mut deserializer).ok() {
 
@@ -230,7 +225,7 @@ impl Signcryption {
 
         output.extend_from_slice(&payload.decrypt(
             &header,
-            sender_public_key.as_ref().map(|spk| spk.as_slice()),
+            sender_public_key.as_ref(),
             &payload_key,
             0, // i as u64,
         )?);
@@ -245,7 +240,7 @@ impl Signcryption {
 
 pub struct DesigncryptResult {
     pub data: Vec<u8>,
-    pub sender_public_key: Option<Vec<u8>>,
+    pub sender_public_key: Option<[u8; 32]>,
 }
 
 pub enum Either<L, R> {
@@ -255,18 +250,18 @@ pub enum Either<L, R> {
 
 #[cfg(test)]
 mod tests {
+    use dryoc::classic::crypto_sign::crypto_sign_keypair;
+
     use super::*;
-    use sodiumoxide::crypto::box_;
-    use sodiumoxide::crypto::sign;
 
     #[test]
     fn test_signcryption_with_asymmetric_recipient() {
         env_logger::init();
-        // Generate sender's signing keypair
-        let (sender_public_key, sender_secret_key) = sign::gen_keypair();
-
         // Generate recipient's encryption keypair
-        let (recipient_public_key, recipient_secret_key) = box_::gen_keypair();
+        let (recipient_public_key, recipient_secret_key) = crypto_box_keypair();
+
+        // Generate sender's signing keypair
+        let (sender_public_key, sender_secret_key) = crypto_sign_keypair();
 
         // Sample data to signcrypt
         let data = b"Hello, world!";
@@ -275,7 +270,7 @@ mod tests {
         let signcrypted_data = Signcryption::signcrypt(
             data,
             Some((sender_public_key, sender_secret_key)),
-            Some(&[recipient_public_key.as_ref().to_vec()]),
+            Some(&[recipient_public_key]),
             None,
         )
         .expect("Signcryption failed");
@@ -290,24 +285,18 @@ mod tests {
         .expect("Designcryption failed");
 
         assert_eq!(result.data, data);
-        assert_eq!(
-            result.sender_public_key,
-            Some(sender_public_key.as_ref().to_vec())
-        );
+        assert_eq!(result.sender_public_key, Some(sender_public_key));
     }
 
     #[test]
     fn test_signcryption_with_symmetric_recipient() {
         // Generate sender's signing keypair
-        let (sender_public_key, sender_secret_key) = sign::gen_keypair();
-
-        // Generate recipient's encryption keypair
-        let (recipient_public_key, recipient_secret_key) = box_::gen_keypair();
+        let (sender_public_key, sender_secret_key) = crypto_sign_keypair();
 
         // Create a symmetric key recipient
         let symmetric_key_recipient = SymmetricKeyRecipient {
             identifier: [1u8; 32].to_vec(),
-            key: sodiumoxide::randombytes::randombytes(32),
+            key: randombytes_buf(32).try_into().unwrap(),
         };
 
         // Sample data to signcrypt
@@ -332,10 +321,7 @@ mod tests {
         .expect("Designcryption failed");
 
         assert_eq!(result.data, data);
-        assert_eq!(
-            result.sender_public_key,
-            Some(sender_public_key.as_ref().to_vec())
-        );
+        assert_eq!(result.sender_public_key, Some(sender_public_key));
     }
 
     #[test]
