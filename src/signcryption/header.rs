@@ -69,12 +69,6 @@ impl SigncryptedMessageHeader {
         sender_public_key: Option<Vec<u8>>,
         recipients: Vec<SigncryptedMessageRecipient>,
     ) -> Result<Self, SigncryptedMessageHeaderError> {
-        log::info!("create");
-        log::info!("create");
-        log::info!("create");
-        log::info!("create");
-        log::info!("create");
-        log::info!("sender_public_key: {:?}", sender_public_key);
         // if let Some(ref spk) = sender_public_key {
         //     if spk.len() != 32 {
         //         return Err(SigncryptedMessageHeaderError::InvalidSenderPublicKey);
@@ -142,7 +136,6 @@ impl SigncryptedMessageHeader {
 
         let inner: HeaderData = rmp_serde::from_slice(&data)
             .map_err(|e| format!("Failed to decode inner MessagePack data: {:?}", e))?;
-        log::info!("inner: {:?}", inner);
 
         let HeaderData(
             format_name,
@@ -194,7 +187,6 @@ impl SigncryptedMessageHeader {
         &self,
         private_key: &[u8; 32],
     ) -> Result<Option<([u8; 32], SigncryptedMessageRecipient)>, Box<dyn Error>> {
-        log::info!("decrypt_payload_key_with_curve25519_keypair");
         for recipient in &self.recipients {
             let (shared_symmetric_key, recipient_identifier) =
                 SigncryptedMessageRecipient::generate_recipient_identifier_for_recipient(
@@ -221,35 +213,23 @@ impl SigncryptedMessageHeader {
         shared_symmetric_key: &[u8],
         recipient_identifier: Option<&[u8]>,
     ) -> Option<([u8; 32], SigncryptedMessageRecipient)> {
-        log::info!("self.public_key: {:?}", self.public_key);
-        log::info!("shared_symmetric_key: {:?}", shared_symmetric_key);
         let mut data = self.public_key.clone().to_vec();
         data.extend_from_slice(shared_symmetric_key);
-        log::info!("data: {:?}", data);
 
         let derived_key: [u8; 32] =
             HMAC::mac(&data, SigncryptedMessageRecipient::HMAC_KEY_SYMMETRIC)[..32]
                 .try_into()
                 .unwrap();
-        log::info!("derived_key: {:?}", derived_key);
 
-        log::info!("identifiers dasfdfasfdasfdsdont match");
         for recipient in &self.recipients {
             if let Some(identifier) = recipient_identifier {
                 if identifier != recipient.recipient_identifier {
                     continue;
-                } else {
-                    log::info!("identifier match");
                 }
-            } else {
-                log::info!("no identifier");
             }
 
-            log::info!("recipient: {:?}", recipient);
             if let Some(payload_key) = recipient.decrypt_payload_key(&derived_key) {
                 return Some((payload_key, recipient.clone()));
-            } else {
-                log::info!("couldnt decrypt payload key");
             }
         }
 
@@ -260,17 +240,15 @@ impl SigncryptedMessageHeader {
         &self,
         payload_key: &[u8; 32],
     ) -> Result<Option<[u8; 32]>, Box<dyn Error>> {
-        log::warn!("decrypt_sender");
         let mut sender_public_key =
             vec![0u8; self.sender_secretbox.len() - CRYPTO_SECRETBOX_MACBYTES];
-        log::info!("sender_public_key: {:?}", sender_public_key);
         let res = crypto_secretbox_open_easy(
             &mut sender_public_key,
             &self.sender_secretbox,
             &Self::SENDER_KEY_SECRETBOX_NONCE,
             payload_key,
         );
-        log::info!("res: {:?}", res);
+
         if res.is_err() {
             return Err(Box::new(
                 SigncryptedMessageHeaderError::InvalidSenderPublicKey,

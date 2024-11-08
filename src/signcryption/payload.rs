@@ -128,7 +128,6 @@ impl SigncryptedMessagePayload {
         let (header_hash, _) = header.encode()?;
         let nonce = Self::generate_nonce(&header_hash, index, self.final_flag);
 
-        log::info!("self.payload_secretbox: {:?}", self.payload_secretbox);
         let mut decrypted = vec![0u8; &self.payload_secretbox.len() - CRYPTO_SECRETBOX_MACBYTES];
         crypto_secretbox_open_easy(&mut decrypted, &self.payload_secretbox, &nonce, payload_key)
             .map_err(|e| format!("Failed to decrypt data: {:?}", e))?;

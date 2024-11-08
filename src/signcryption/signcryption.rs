@@ -82,12 +82,9 @@ impl Signcryption {
         }
 
         let mut result = header.encoded()?;
-        log::info!("signcrypt header: {:?}", header.encoded()?.len());
         for payload in payloads.clone() {
-            log::warn!("signcrypt payloads: {:?}", payload);
             result.extend_from_slice(&payload.encode()?);
         }
-        log::info!("signcrypt result: {:?}", result.len());
 
         Ok(result)
     }
@@ -104,13 +101,9 @@ impl Signcryption {
         sender: Option<&[u8]>,
     ) -> Result<DesigncryptResult, Box<dyn Error>> {
         let mut deserializer = Deserializer::new(signcrypted);
-        // log::info!("adfkjghfsdkjg");
-        // // Deserialize the header
-        // let header_data: Vec<u8> = Deserialize::deserialize(&mut deserializer)?;
-        // log::info!("header_data: {:?}", header_data);
+
         let header = SigncryptedMessageHeader::decode(&signcrypted, Some(false))
             .map_err(|e| format!("Failed to decode header: {}", e))?;
-        log::info!("header recipients: {:?}", header.recipients);
 
         let header_length = header.encoded()?.len();
 
@@ -123,9 +116,7 @@ impl Signcryption {
 
         // Deserialize the payloads
         // let mut deserializer = Deserializer::new(payloads_data);
-        log::info!("payloads_data: {:?}", payloads_data);
         let payload = SigncryptedMessagePayload::decode(EncodedData::Packed(payloads_data), false)?;
-        log::info!("payload: {:?}", payload);
         let payload_key_and_recipient = match keypair_or_symmetric_key_recipient {
             Either::Left(secret_key) => header
                 .decrypt_payload_key_with_curve25519_keypair(secret_key)
@@ -143,14 +134,11 @@ impl Signcryption {
 
         let (payload_key, recipient) =
             payload_key_and_recipient.ok_or("Not an intended recipient")?;
-        log::info!("payload_key: {:?}", payload_key);
         let sender_public_key = header
             .decrypt_sender(&payload_key)
             .map_err(|e| format!("Failed to decrypt sender public key: {}", e))?;
-        log::info!("sender_public_key: {:?}", sender_public_key);
         let decrypted_payload =
             payload.decrypt(&header, sender_public_key.as_ref(), &payload_key, 0)?;
-        log::info!("decrypted_payload: {:?}", decrypted_payload);
         // while let Some(item) = Deserialize::deserialize(&mut deserializer).ok() {
 
         // ... payload validation and decryption ...
@@ -177,8 +165,6 @@ impl Signcryption {
         //         log::error!("Deserialization failed: {:?}", e);
         //     }
         // }
-
-        log::warn!("designcrypt payloads: {:?}", payload);
 
         // log::info!("Deserialized {} items", items.len());
         // log::info!("Deserialized {:?}", items);
@@ -274,7 +260,6 @@ mod tests {
             None,
         )
         .expect("Signcryption failed");
-        log::info!("signcrypted_data: {:?}", signcrypted_data);
 
         // Designcrypt the data using the recipient's secret key
         let result = Signcryption::designcrypt(
@@ -310,7 +295,6 @@ mod tests {
             Some(&[symmetric_key_recipient.clone()]),
         )
         .expect("Signcryption failed");
-        log::info!("signcrypted_data: {:?}", signcrypted_data);
 
         // Designcrypt the data using the recipient's secret key
         let result = Signcryption::designcrypt(

@@ -63,7 +63,6 @@ impl SigncryptedMessageRecipient {
                 ephemeral_private_key,
                 &recipient_index,
             )?;
-        log::info!("shared_symmetric_key: {:?}", shared_symmetric_key);
 
         let mut encrypted_payload_key = vec![0u8; payload_key.len() + CRYPTO_SECRETBOX_MACBYTES];
         crypto_secretbox_easy(
@@ -75,7 +74,7 @@ impl SigncryptedMessageRecipient {
         .expect("Failed to encrypt payload key");
 
         let recip = Self::new(recipient_identifier, encrypted_payload_key, index)?;
-        log::info!("recip: {:?}", recip);
+
         Ok(recip)
     }
 
@@ -92,13 +91,6 @@ impl SigncryptedMessageRecipient {
         )[..32]
             .try_into()
             .expect("HMAC output length is guaranteed to be 32 bytes");
-        log::info!("ephemeral_public_key: {:?}", ephemeral_public_key);
-        log::info!("recipient.key: {:?}", recipient.key);
-        log::info!(
-            "data: {:?}",
-            [ephemeral_public_key, &recipient.key].concat()
-        );
-        log::info!("create derived_key: {:?}", derived_key);
 
         let mut encrypted_payload_key = vec![0u8; payload_key.len() + CRYPTO_SECRETBOX_MACBYTES];
         crypto_secretbox_easy(
@@ -109,7 +101,6 @@ impl SigncryptedMessageRecipient {
         );
 
         let recip = Self::new(recipient.identifier, encrypted_payload_key, index)?;
-        log::info!("recip: {:?}", recip);
         Ok(recip)
     }
 
