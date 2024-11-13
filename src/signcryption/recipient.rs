@@ -6,8 +6,9 @@ use dryoc::{
     constants::{CRYPTO_BOX_MACBYTES, CRYPTO_SECRETBOX_MACBYTES},
 };
 use hmac_sha512::HMAC;
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SymmetricKeyRecipient {
     pub key: [u8; 32],
     pub identifier: Vec<u8>,

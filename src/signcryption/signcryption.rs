@@ -4,6 +4,7 @@ use crate::signcryption::recipient::{SigncryptedMessageRecipient, SymmetricKeyRe
 use dryoc::classic::crypto_box::crypto_box_keypair;
 use dryoc::rng::randombytes_buf;
 use rmp_serde::Deserializer;
+use serde::{Deserialize, Serialize};
 use std::error::Error;
 
 use super::payload::EncodedData;
@@ -224,11 +225,13 @@ impl Signcryption {
     }
 }
 
+#[derive(Serialize, Deserialize)]
 pub struct DesigncryptResult {
     pub data: Vec<u8>,
     pub sender_public_key: Option<[u8; 32]>,
 }
 
+#[derive(Serialize, Deserialize)]
 pub enum Either<L, R> {
     Left(L),
     Right(R),
