@@ -97,8 +97,8 @@ impl Signcryption {
 
     pub fn designcrypt(
         signcrypted: &[u8],
-        keypair_or_symmetric_key_recipient: Either<&[u8; 32], &SymmetricKeyRecipient>,
-        sender: Option<&[u8]>,
+        secret_key_or_symmetric_key_recipient: Either<&[u8; 32], &SymmetricKeyRecipient>,
+        sender: Option<&[u8; 32]>,
     ) -> Result<DesigncryptResult, Box<dyn Error>> {
         let mut deserializer = Deserializer::new(signcrypted);
 
@@ -117,7 +117,7 @@ impl Signcryption {
         // Deserialize the payloads
         // let mut deserializer = Deserializer::new(payloads_data);
         let payload = SigncryptedMessagePayload::decode(EncodedData::Packed(payloads_data), false)?;
-        let payload_key_and_recipient = match keypair_or_symmetric_key_recipient {
+        let payload_key_and_recipient = match secret_key_or_symmetric_key_recipient {
             Either::Left(secret_key) => header
                 .decrypt_payload_key_with_curve25519_keypair(secret_key)
                 .map_err(|e| {
@@ -265,7 +265,7 @@ mod tests {
         let result = Signcryption::designcrypt(
             &signcrypted_data,
             Either::Left(&recipient_secret_key),
-            Some(sender_public_key.as_ref()),
+            Some(&sender_public_key),
         )
         .expect("Designcryption failed");
 
@@ -300,7 +300,7 @@ mod tests {
         let result = Signcryption::designcrypt(
             &signcrypted_data,
             Either::Right(&symmetric_key_recipient),
-            Some(sender_public_key.as_ref()),
+            Some(&sender_public_key),
         )
         .expect("Designcryption failed");
 
